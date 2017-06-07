@@ -50,19 +50,19 @@ int main(int argc, char **argv)
 	
 	dosya gkod("GKod.tab");
 	gkod.yukle();
+	#ifdef debug
+	printf("GKod dosyası yüklendi \n");
+	#endif
 	
+	gkod.parcala();
+	#ifdef debug
+	printf("GKod dosyası temizlendi. Satır sayısı %d\n", gkod.satirlar.size());
 	
-	/*
-	
-	//tmr zamanlayici();
-	
-	//GKod okuyucu 
-	if(gkod.hata){
-		cout << "Dosya bulunamadı \n";
-	}else{
-		cout << "Dosya boyutu : " << gkod.boyut;
+	for(int i=0;i<100;i++){
+		printf("%d, %s\n", i, gkod.satirlar[i].c_str());
 	}
-	*/
+	#endif
+	
 	return 0;
 }
 
