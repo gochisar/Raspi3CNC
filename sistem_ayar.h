@@ -6,232 +6,388 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <string>
+#include <sstream>
+#include "GPIO_erisim.h"
+
 using namespace std;
+
+// 			3.3V	-	1	2	-	5V
+//	no	GPIO2	I2C	-	3	4	-	5V
+//	no	GPIO3	I2C	-	5	6	-	GND
+//	Xs	GPIO4		-	7	8	-	TX	GPIO14
+//			GND		-	9	10	-	RX	GPIO15
+//	Xd	GPIO17		-	11	12	-		GPIO18	Ys
+//	Zs	GPIO27		-	13	14	-	GND
+//	Zd	GPIO22		-	15	16	-		GPIO23	Yd
+//			3.3V	-	17	18	-		GPIO24	As
+//	Bs	GPIO10		-	19	20	-	GND	
+//	Bd	GPIO9		-	21	22	-		GPIO25	Ad
+//	Cs	GPIO11		-	23	24	-		GPIO8	Cd
+//			GND		-	25	26	-		GPIO7
+//					-	27	28	-	
+//	Xh	GPIO5		-	29	30	-	GND
+//	Yh	GPIO6		-	31	32	-		GPIO12
+//	Zh	GPIO13		-	33	34	-	GND
+//		GPIO19		-	35	36	-		GPIO16	basla
+//		GPIO26		-	37	38	-		GPIO20	dur
+//			GND		-	39	40	-		GPIO21	acil
+
+//GPIO 2-3-14-15 ileride kullanılmak üzere ayrıldı
 
 //kod ayar dosyası
 typedef uint8_t u8;
 typedef uint16_t u16;
+typedef uint32_t u32;
 typedef float fl;
+typedef double dbl;
 
-typedef struct {
-	u8 step;
-	u8 dir;
-	u8 en;
-	u8 acil;
-	u8 step_ters;
-	u8 dir_ters;
-	u8 en_ters;
-	u8 acil_ters;
-	u8 home;
-	u8 end;
-	u8 home_ters;
-	u8 end_ters;
-} motor_pin_t;
+#define max_eksen_sayisi 6
 
-typedef struct {
-	motor_pin_t pinler;
-	u8 eksen_tipi;		// 1  düz, 2 dönen
-	u8 eksen;			// 0 x, 1 y, 2 z, 3 a, 4 b, 5 c
-	fl step_her_mm;		// step/mm
-	fl derece_step;		// dönen eksenler için her stepte kaç derece hareket edecek
-	fl mm_her_tur;		// 1 tur dönüşte kaç mm yol alınıyor
-	u16 step_her_tur;	// 1 tur dönüş için kaç step gerekiyor
-	fl hizlanma;		// mm/s2
-	fl home_hiz;		// home konumuna giderken hızlanması
-	fl normal_hiz;		// normal hareket hız limiti
-	fl kesme_hizi;		// kesimde hız limiti
+//Kullanıcı girişleri
+//pinlerin tanımı
+typedef struct pin{
+	u8 pin;
+	u8 ters;
+	u8 bagli;
+}pin_t;
+
+typedef struct motor_pinler{
+	pin_t step;
+	pin_t dir;
+	pin_t en;
+	pin_t acil;
+	pin_t home;
+	pin_t end;
+	u8 aktif_pulse;
+} motor_pinler_t;
+
+typedef struct hareket{
+	u16 step_tur; 		// step her tur
+	fl step_mm;			// step her mm
+	fl ivme;			// mm / s^2
+	fl home;			// mm/dk
+	fl hiz;				// mm/dk
+	fl kesim;			// mm/dk
+}hareketlenme_t;
+
+typedef struct eksen{
+	u8 tip;		//0 yok, 1 düz, 2 dönen
+	u8 eksen;	// 0 x, 1 y, 2 z, 3 a, 4 b, 5 c
+}eksen_t;
+
+typedef struct motor{
+	motor_pinler_t 	pin;		//pin kontrolleri
+	hareketlenme_t 	hiz;		//hız verileri
+	eksen_t 			eksen;		//eksen ayarları
 }motor_t;
 
-typedef struct{
-	u8 motor_sayisi;		// kaç step motor kontrol edilecek
-	u8 pin_acil_stop;		// acil
-	u8 pin_durdur;			// dur
-	u8 pin_baslat;			// başlat
-	u8 pulse_us;			// sinyal aktif süresi
-	motor_t motorlar[6];	// motorlar
-} sistem_t;
+typedef struct genel_pinler{
+	pin_t acil;
+	pin_t dur;
+	pin_t baslat;
+}genel_pinler_t;
 
-sistem_t sys;
+typedef struct ayar{
+	u8 					motor_sayisi;
+	genel_pinler_t 	pin;
+	u8 					home_sira[max_eksen_sayisi];
+	motor_t 			motor[max_eksen_sayisi];	// motorlar
+}ayar_t;
 
+enum{
+	x = 0, y, z, a, b, c
+};
 
+class ayar_dosyasi{
+	public:
+		ayar_dosyasi();
+		void on_ayarlari_al();
+		void kaydet();
+		bool oku();
+		std::string hata;
+		void acil_pin(int pn, int ters){pin_ata(&(ayar.pin.acil),pn,ters);};
+		void dur_pin(int pn, int ters){pin_ata(&(ayar.pin.dur),pn,ters);};
+		void baslat_pin(int pn, int ters){pin_ata(&(ayar.pin.baslat),pn,ters);};
+		void motor_step_pin(int mot, int pn, int ters){pin_ata(&(ayar.motor[mot].pin.step),pn,ters);};
+		void motor_dir_pin(int mot, int pn, int ters){pin_ata(&(ayar.motor[mot].pin.dir),pn,ters);};
+		void motor_en_pin(int mot, int pn, int ters){pin_ata(&(ayar.motor[mot].pin.en),pn,ters);};
+		void motor_acil_pin(int mot, int pn, int ters){pin_ata(&(ayar.motor[mot].pin.acil),pn,ters);};
+		void motor_home_pin(int mot, int pn, int ters){pin_ata(&(ayar.motor[mot].pin.home),pn,ters);};
+		void motor_end_pin(int mot, int pn, int ters){pin_ata(&(ayar.motor[mot].pin.end),pn,ters);};
+		void motor_aktif_pulse(int mot, int pls){ayar.motor[mot].pin.aktif_pulse = pls; degisti = true;};
+		void motor_step_tur(int mot, int stp){ayar.motor[mot].hiz.step_tur = stp; degisti = true;};
+		void motor_step_her_mm(int mot, fl stp){ayar.motor[mot].hiz.step_mm = stp; degisti = true;};
+		void motor_ivme(int mot, fl ivm){ayar.motor[mot].hiz.ivme = ivm; degisti = true;};
+		void motor_hiz_home(int mot, fl v){ayar.motor[mot].hiz.home = v; degisti = true;};
+		void motor_hiz_normal(int mot, fl v){ayar.motor[mot].hiz.hiz = v; degisti = true;};
+		void motor_hiz_kesim(int mot, fl v){ayar.motor[mot].hiz.kesim = v; degisti = true;};
+		ayar_t ayarlar(){return ayar;};
+	private:
+		bool degisti;
+		ayar_t ayar;
+		//ön ayarlar
+		void motor_genel_on_ayar(motor_t *n);
+		void pin_genel_on_ayar(pin_t *pin);
+		void hiz_genel_on_ayar(hareketlenme_t *h);
+		void genel_on_ayar();
+		//dosya erişim
+		std::string dosya_ad;
+		streampos bas, son;
+		bool dosya_var_mi(const std::string& ad);
+		u32 dosya_boyutu(const std::string& ad);
+		//ayar değiştirme
+		void pin_ata(pin_t *pin, int pn, int ters);
+};
 
-void sistem_on_tanimli(){
-	sys.motor_sayisi = 3;
-	sys.pin_acil_stop = 21;
-	sys.pin_durdur = 20;
-	sys.pin_baslat = 16;
-	sys.pulse_us = 1;
-	//x ekseni
-	sys.motorlar[0].eksen_tipi = 1;
-	sys.motorlar[0].eksen = 0;
-	sys.motorlar[0].step_her_mm = 426.6667;
-	sys.motorlar[0].derece_step = 0.225;
-	sys.motorlar[0].mm_her_tur = 3.75;
-	sys.motorlar[0].step_her_tur = 1600;
-	sys.motorlar[0].hizlanma = 50.0;
-	sys.motorlar[0].home_hiz = 100.0;
-	sys.motorlar[0].normal_hiz = 2000.0;
-	sys.motorlar[0].kesme_hizi = 900.0;
-	sys.motorlar[0].pinler.step = 4;
-	sys.motorlar[0].pinler.dir = 17;
-	sys.motorlar[0].pinler.en = 0;
-	sys.motorlar[0].pinler.acil = 0;
-	sys.motorlar[0].pinler.home = 0;
-	sys.motorlar[0].pinler.end = 0;
-	sys.motorlar[0].pinler.step_ters = 0;
-	sys.motorlar[0].pinler.dir_ters = 0;
-	sys.motorlar[0].pinler.en_ters = 0;
-	sys.motorlar[0].pinler.acil_ters = 0;
-	sys.motorlar[0].pinler.home_ters = 0;
-	sys.motorlar[0].pinler.end_ters = 0;
-	//y ekseni
-	sys.motorlar[1].eksen_tipi = 1;
-	sys.motorlar[1].eksen = 1;
-	sys.motorlar[1].step_her_mm = 426.6667;
-	sys.motorlar[1].derece_step = 0.225;
-	sys.motorlar[1].mm_her_tur = 3.75;
-	sys.motorlar[1].step_her_tur = 1600;
-	sys.motorlar[1].hizlanma = 50.0;
-	sys.motorlar[1].home_hiz = 100.0;
-	sys.motorlar[1].normal_hiz = 2000.0;
-	sys.motorlar[1].kesme_hizi = 900.0;
-	sys.motorlar[1].pinler.step = 18;
-	sys.motorlar[1].pinler.dir = 23;
-	sys.motorlar[1].pinler.en = 0;
-	sys.motorlar[1].pinler.acil = 0;
-	sys.motorlar[1].pinler.home = 0;
-	sys.motorlar[1].pinler.end = 0;
-	sys.motorlar[1].pinler.step_ters = 0;
-	sys.motorlar[1].pinler.dir_ters = 0;
-	sys.motorlar[1].pinler.en_ters = 0;
-	sys.motorlar[1].pinler.acil_ters = 0;
-	sys.motorlar[1].pinler.home_ters = 0;
-	sys.motorlar[1].pinler.end_ters = 0;
-	//z ekseni
-	sys.motorlar[2].eksen_tipi = 1;
-	sys.motorlar[2].eksen = 2;
-	sys.motorlar[2].step_her_mm = 426.6667;
-	sys.motorlar[2].derece_step = 0.225;
-	sys.motorlar[2].mm_her_tur = 3.75;
-	sys.motorlar[2].step_her_tur = 1600;
-	sys.motorlar[2].hizlanma = 50.0;
-	sys.motorlar[2].home_hiz = 100.0;
-	sys.motorlar[2].normal_hiz = 2000.0;
-	sys.motorlar[2].kesme_hizi = 900.0;
-	sys.motorlar[2].pinler.step = 27;
-	sys.motorlar[2].pinler.dir = 22;
-	sys.motorlar[2].pinler.en = 0;
-	sys.motorlar[2].pinler.acil = 0;
-	sys.motorlar[2].pinler.home = 0;
-	sys.motorlar[2].pinler.end = 0;
-	sys.motorlar[2].pinler.step_ters = 0;
-	sys.motorlar[2].pinler.dir_ters = 0;
-	sys.motorlar[2].pinler.en_ters = 0;
-	sys.motorlar[2].pinler.acil_ters = 0;
-	sys.motorlar[2].pinler.home_ters = 0;
-	sys.motorlar[2].pinler.end_ters = 0;
-	//a ekseni
-	sys.motorlar[3].eksen_tipi = 2;
-	sys.motorlar[3].eksen = 3;
-	sys.motorlar[3].step_her_mm = 426.6667;
-	sys.motorlar[3].derece_step = 0.225;
-	sys.motorlar[3].mm_her_tur = 3.75;
-	sys.motorlar[3].step_her_tur = 1600;
-	sys.motorlar[3].hizlanma = 50.0;
-	sys.motorlar[3].home_hiz = 100.0;
-	sys.motorlar[3].normal_hiz = 2000.0;
-	sys.motorlar[3].kesme_hizi = 900.0;
-	sys.motorlar[3].pinler.step = 24;
-	sys.motorlar[3].pinler.dir = 25;
-	sys.motorlar[3].pinler.en = 0;
-	sys.motorlar[3].pinler.acil = 0;
-	sys.motorlar[3].pinler.home = 0;
-	sys.motorlar[3].pinler.end = 0;
-	sys.motorlar[3].pinler.step_ters = 0;
-	sys.motorlar[3].pinler.dir_ters = 0;
-	sys.motorlar[3].pinler.en_ters = 0;
-	sys.motorlar[3].pinler.acil_ters = 0;
-	sys.motorlar[3].pinler.home_ters = 0;
-	sys.motorlar[3].pinler.end_ters = 0;
-	//b ekseni
-	sys.motorlar[4].eksen_tipi = 2;
-	sys.motorlar[4].eksen = 4;
-	sys.motorlar[4].step_her_mm = 426.6667;
-	sys.motorlar[4].derece_step = 0.225;
-	sys.motorlar[4].mm_her_tur = 3.75;
-	sys.motorlar[4].step_her_tur = 1600;
-	sys.motorlar[4].hizlanma = 50.0;
-	sys.motorlar[4].home_hiz = 100.0;
-	sys.motorlar[4].normal_hiz = 2000.0;
-	sys.motorlar[4].kesme_hizi = 900.0;
-	sys.motorlar[4].pinler.step = 10;
-	sys.motorlar[4].pinler.dir = 9;
-	sys.motorlar[4].pinler.en = 0;
-	sys.motorlar[4].pinler.acil = 0;
-	sys.motorlar[4].pinler.home = 0;
-	sys.motorlar[4].pinler.end = 0;
-	sys.motorlar[4].pinler.step_ters = 0;
-	sys.motorlar[4].pinler.dir_ters = 0;
-	sys.motorlar[4].pinler.en_ters = 0;
-	sys.motorlar[4].pinler.acil_ters = 0;
-	sys.motorlar[4].pinler.home_ters = 0;
-	sys.motorlar[4].pinler.end_ters = 0;
-	//c ekseni
-	sys.motorlar[0].eksen_tipi = 2;
-	sys.motorlar[0].eksen = 5;
-	sys.motorlar[0].step_her_mm = 426.6667;
-	sys.motorlar[0].derece_step = 0.225;
-	sys.motorlar[0].mm_her_tur = 3.75;
-	sys.motorlar[0].step_her_tur = 1600;
-	sys.motorlar[0].hizlanma = 50.0;
-	sys.motorlar[0].home_hiz = 100.0;
-	sys.motorlar[0].normal_hiz = 2000.0;
-	sys.motorlar[0].kesme_hizi = 900.0;
-	sys.motorlar[0].pinler.step = 11;
-	sys.motorlar[0].pinler.dir = 8;
-	sys.motorlar[0].pinler.en = 0;
-	sys.motorlar[0].pinler.acil = 0;
-	sys.motorlar[0].pinler.home = 0;
-	sys.motorlar[0].pinler.end = 0;
-	sys.motorlar[0].pinler.step_ters = 0;
-	sys.motorlar[0].pinler.dir_ters = 0;
-	sys.motorlar[0].pinler.en_ters = 0;
-	sys.motorlar[0].pinler.acil_ters = 0;
-	sys.motorlar[0].pinler.home_ters = 0;
-	sys.motorlar[0].pinler.end_ters = 0;
+ayar_dosyasi::ayar_dosyasi(){
+	degisti = false;
+	dosya_ad = "ayar";
+	hata = "";
+	#ifdef debug
+	printf("ayar dosyası başlat\n");
+	#endif
 }
 
-streampos bas, son;
-
-inline bool dosya_kontrol(const std::string& ad){
-	struct stat buffer;
-	return (stat (ad.c_str(), &buffer) == 0);
+bool ayar_dosyasi::oku(){
+	if(dosya_var_mi(dosya_ad)){
+		hata = "ayar dosyası yok";
+		return false;
+	}
+	if(dosya_boyutu(dosya_ad) != 304){
+		std::stringstream ss;
+		ss << "ayar dosyası bozuk " << dosya_boyutu(dosya_ad);
+		hata = ss.str();
+		return false;
+	}
+	ifstream dosya(dosya_ad.c_str(), ios::in|ios::binary);
+	dosya.seekg(0,ios::beg);
+	dosya.read((char *)&ayar, sizeof(ayar_t));
+	dosya.close();
+	return true;
 }
 
-void dosya_boyutu(){
-	ifstream dosya("ayar", ios::binary);
+void ayar_dosyasi::kaydet(){
+	if(!degisti){on_ayarlari_al();}
+	ofstream dosya(dosya_ad.c_str(), ios::out | ios::binary | ios::trunc);
+	dosya.write((char *)(&ayar), sizeof(ayar_t));
+	dosya.close();
+}
+
+u32 ayar_dosyasi::dosya_boyutu(const std::string& ad){
+	ifstream dosya(ad.c_str(), ios::binary);
 	bas = dosya.tellg();
 	dosya.seekg(0,ios::end);
 	son = dosya.tellg();
 	dosya.close();
-	cout << "dosya boyutu: " << (son-bas) << " byte.\n";
+	return (son-bas);
 }
 
-void ayarlari_yaz(){
-	ofstream dosya("ayar", ios::out | ios::binary | ios::trunc);
-	dosya.write((char *)(&sys), sizeof(sistem_t));
-	dosya.close();
+bool ayar_dosyasi::dosya_var_mi(const std::string& ad){
+	struct stat buffer;
+	return !(stat (ad.c_str(), &buffer) == 0);
 }
 
-void ayarlari_oku(){
-	if(!dosya_kontrol("ayar")){
-		sistem_on_tanimli();
-		ayarlari_yaz();
+void ayar_dosyasi::on_ayarlari_al(){
+	genel_on_ayar();
+}
+
+void ayar_dosyasi::genel_on_ayar(){
+	ayar.motor_sayisi = 3;
+	//sistem pinleri
+	pin_genel_on_ayar(&(ayar.pin.acil));
+	ayar.pin.acil.pin = 21;
+	ayar.pin.acil.bagli = 1;
+	pin_genel_on_ayar(&(ayar.pin.dur));
+	ayar.pin.dur.pin = 20;
+	ayar.pin.dur.bagli = 1;
+	pin_genel_on_ayar(&(ayar.pin.baslat));
+	ayar.pin.baslat.pin = 16;
+	ayar.pin.baslat.bagli = 1;
+	ayar.home_sira[0] = z;
+	ayar.home_sira[1] = x;
+	ayar.home_sira[2] = y;
+	ayar.home_sira[3] = a;
+	ayar.home_sira[4] = b;
+	ayar.home_sira[5] = c;
+	//motor ayarları
+	for(u8 i=0;i<max_eksen_sayisi;i++)
+		motor_genel_on_ayar(&(ayar.motor[i]));
+	ayar.motor[0].eksen.eksen = x;
+	ayar.motor[0].eksen.tip = 1;
+	ayar.motor[0].pin.step.pin = 4;
+	ayar.motor[0].pin.step.bagli = 1;
+	ayar.motor[0].pin.dir.pin = 17;
+	ayar.motor[0].pin.dir.bagli = 1;
+	ayar.motor[0].pin.home.pin = 5;
+	ayar.motor[0].pin.home.bagli = 1;
+	
+	ayar.motor[1].eksen.eksen = y;
+	ayar.motor[1].eksen.tip = 1;
+	ayar.motor[1].pin.step.pin = 18;
+	ayar.motor[1].pin.step.bagli = 1;
+	ayar.motor[1].pin.dir.pin = 23;
+	ayar.motor[1].pin.dir.bagli = 1;
+	ayar.motor[1].pin.home.pin = 6;
+	ayar.motor[1].pin.home.bagli = 1;
+	
+	ayar.motor[2].eksen.eksen = z;
+	ayar.motor[2].eksen.tip = 1;
+	ayar.motor[2].pin.step.pin = 27;
+	ayar.motor[2].pin.step.bagli = 1;
+	ayar.motor[2].pin.dir.pin = 22;
+	ayar.motor[2].pin.dir.bagli = 1;
+	ayar.motor[2].pin.home.pin = 13;
+	ayar.motor[2].pin.home.bagli = 1;
+	
+	ayar.motor[3].eksen.eksen = a;
+	ayar.motor[3].eksen.tip = 0;
+	ayar.motor[4].eksen.eksen = b;
+	ayar.motor[4].eksen.tip = 0;
+	ayar.motor[5].eksen.eksen = c;
+	ayar.motor[5].eksen.tip = 0;
+	
+}
+
+void ayar_dosyasi::hiz_genel_on_ayar(hareketlenme_t *h){
+	(*h).step_tur = 1600;
+	(*h).step_mm = 426.666666;
+	(*h).ivme = 50.0;
+	(*h).home = 100.0;
+	(*h).hiz = 500.0;
+	(*h).kesim = 200.0;
+}
+
+void ayar_dosyasi::pin_genel_on_ayar(pin_t *pin){
+	(*pin).pin = 0;
+	(*pin).ters = 0;
+	(*pin).bagli = 0;
+}
+
+void ayar_dosyasi::motor_genel_on_ayar(motor_t *n){
+	(*n).eksen.tip = 1;
+	pin_genel_on_ayar(&((*n).pin.step));
+	pin_genel_on_ayar(&((*n).pin.dir));
+	pin_genel_on_ayar(&((*n).pin.en));
+	pin_genel_on_ayar(&((*n).pin.acil));
+	pin_genel_on_ayar(&((*n).pin.home));
+	pin_genel_on_ayar(&((*n).pin.end));
+	hiz_genel_on_ayar(&((*n).hiz));
+	
+}
+
+void ayar_dosyasi::pin_ata(pin_t *pin, int pn, int ters){
+	if(pn == 0){
+		(*pin).pin = 0;
+		(*pin).ters = 0;
+		(*pin).bagli = 0;
+	}else{
+		(*pin).pin = pn;
+		(*pin).ters = ters;
+		(*pin).bagli = 1;
 	}
-	ifstream dosya("ayar", ios::in|ios::binary);
-	dosya.seekg(0,ios::beg);
-	dosya.read((char *)&sys, sizeof(sistem_t));
-	dosya.close();
+	degisti = true;
+}
+
+//elektronik dilinde ayarlar
+
+typedef struct pin_s{
+	u8 pin;
+	bool aktif;		//aktif 1 mi 0 mı
+}pin_st;
+
+typedef struct motor_pin_s{
+	pin_st step;	//step pulse pin
+	pin_st dir;	//dir pulse pin
+	pin_st en;		//aktif pulse pin
+}motor_pin_st;
+
+typedef struct motor_takip_pin_s{
+	pin_st acil;
+	pin_st home;
+	pin_st end;
+}motor_takip_pin_st;
+
+typedef struct hareket_s{
+	fl derece_step;		//step başına kaç derece döner
+	fl mm_step;			//step başına kaç mm ilerler
+	fl ivme;			//step/s^2
+	fl home;			//step/s
+	fl hiz;				//step/s
+	fl kesim;			//step/s
+}hareket_st;
+
+typedef struct motor_s{
+	u8 tip;
+	motor_pin_st kontrol;
+	motor_takip_pin_st takip;
+	hareket_st hareket;
+}motor_st;
+
+class sys{
+	public:
+		void sys_baslat(ayar_t ayr);
+	private:
+		u8 motor_sayisi;
+		pin_st acil, dur, baslat;
+		motor_st motor[max_eksen_sayisi];
+		
+		void giris_pini(pin_st *pin, pin_t *ayp);
+		void cikis_pin(pin_st *pin, pin_t *ayp);
+};
+
+void sys::sys_baslat(ayar_t ayr){
+	setup_io();
+	motor_sayisi = ayr.motor_sayisi;
+	giris_pini(&(acil), &(ayr.pin.acil));
+	giris_pini(&(dur), &(ayr.pin.dur));
+	giris_pini(&(baslat), &(ayr.pin.baslat));
+	//eksenleri sıralı bul
+	int si=0;
+	while(si<max_eksen_sayisi){
+		#ifdef debug
+		printf("%d motor ayarı için arama başlatılıyor \n", si);
+		#endif
+	for(int i=0;i<max_eksen_sayisi;i++){
+		if(ayr.motor[i].eksen.eksen == si){
+			motor[si].tip = ayr.motor[i].eksen.tip;
+			//pin ayarları
+			cikis_pin(&(motor[si].kontrol.step),&(ayr.motor[i].pin.step));
+			cikis_pin(&(motor[si].kontrol.dir),&(ayr.motor[i].pin.dir));
+			cikis_pin(&(motor[si].kontrol.en),&(ayr.motor[i].pin.en));
+			giris_pini(&(motor[si].takip.acil),&(ayr.motor[i].pin.acil));
+			giris_pini(&(motor[si].takip.home),&(ayr.motor[i].pin.home));
+			giris_pini(&(motor[si].takip.end),&(ayr.motor[i].pin.end));
+			//hareket ayarları
+			motor[si].hareket.derece_step =(ayr.motor[i].hiz.step_tur == 0.0 ? 0 :  360.0 / ayr.motor[i].hiz.step_tur);
+			motor[si].hareket.mm_step = (ayr.motor[i].hiz.step_mm == 0.0 ? 0 : 1.0 / ayr.motor[i].hiz.step_mm);
+			motor[si].hareket.ivme = ayr.motor[i].hiz.ivme * ayr.motor[i].hiz.step_mm;
+			motor[si].hareket.home = ayr.motor[i].hiz.home * ayr.motor[i].hiz.step_mm;
+			motor[si].hareket.hiz = ayr.motor[i].hiz.hiz * ayr.motor[i].hiz.step_mm;
+			motor[si].hareket.kesim = ayr.motor[i].hiz.kesim * ayr.motor[i].hiz.step_mm;
+			#ifdef debug
+			printf("%d ayarından sisteme aktarım yapıldı\n",i);
+			#endif
+		}
+	}
+	si++;
+	}
+	
+}
+
+void sys::cikis_pin(pin_st *pn, pin_t *ayp){
+	if((*ayp).bagli > 0){
+		(*pn).pin = (*ayp).pin;
+		(*pn).aktif = ((*ayp).ters == 0);
+		pin_cikis((*pn).pin);
+	}
+}
+
+void sys::giris_pini(pin_st *pn, pin_t *ayp){
+	if((*ayp).bagli > 0){
+		(*pn).pin = (*ayp).pin;
+		(*pn).aktif = ((*ayp).ters == 0);
+		pin_giris((*pn).pin);
+	}
 }
 
 #endif
