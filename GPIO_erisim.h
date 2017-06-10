@@ -93,4 +93,6 @@ void pin_set(int n){
 void pin_clr(int n){
 	GPIO_CLR = 1<<n;
 }
+
+#define cikis(a,b) (b==1?(GPIO_SET = 1<<a):(GPIO_CLR = 1<<a))
 #endif
